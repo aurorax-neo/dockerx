@@ -10,6 +10,8 @@
 - **极简高性能**：专为 Snippets 引擎优化，无正则 body 替换，确保不超时。
 - **动态 Auth 鉴权劫持**：兼容多个仓库的不同 Token 服务器，自动拦截 401 鉴权挑战。
 - **官方镜像补全**：自动为 `nginx` 等短名官方 Docker 镜像补足 `/v2/library/` 路径。
+- **隐蔽防探测 (Stealth Mode)**：精准拦截非 Docker 规范的未知探测请求，直接静默丢弃 (空 404)，防扫描防滥用。
+- **支持 Docker Push**：全方法透传，支持 `POST/PUT` Body 数据透传，不仅支持镜像拉取，也能完美支持镜像推送。
 
 ## 🚀 部署指南 (Cloudflare Snippets)
 
