@@ -15,8 +15,8 @@ export default {
     // 拦截非 Docker 规范的未知探测请求 (防扫描)
     const isValidDockerReq = path.startsWith("/v2/") || path.startsWith("/v1/") || path.startsWith("/search") || path.startsWith("/token") || path.startsWith("/auth/");
     if (!isValidDockerReq) {
-      // 使用 403 阻断或模拟成云厂商的默认拦截，不返回 404 以防暴露这是个代理
-      return new Response(null, { status: 403 });
+      // 隐蔽模式：返回空 404 阻断未知探测请求，不暴露代理特征
+      return new Response(null, { status: 404 });
     }
 
     for (const registry of thirdPartyRegistries) {
@@ -45,12 +45,25 @@ export default {
       }
     }
 
-    // 3. 发起透传请求
-    const response = await fetch(new Request(url, {
+    // 3. 构造透传请求 (对齐 githubx：清理敏感 Header 并透传 Body 以支持 Docker Push)
+    const init = {
       method: request.method,
-      headers: request.headers,
+      headers: new Headers(request.headers),
       redirect: "follow"
-    }));
+    };
+
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      init.body = request.body;
+    }
+
+    init.headers.delete('Host');
+    init.headers.delete('X-Forwarded-For');
+    init.headers.delete('X-Real-IP');
+    init.headers.delete('CF-Connecting-IP');
+    init.headers.delete('Referer');
+
+    // 发起请求
+    const response = await fetch(url.href, init);
 
     // 4. 劫持鉴权服务器地址 (支持多仓库)
     const resHeaders = new Headers(response.headers);
