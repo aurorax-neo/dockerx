@@ -45,7 +45,7 @@ export default {
       }
     }
 
-    // 3. 构造透传请求 (对齐 githubx：清理敏感 Header 并透传 Body 以支持 Docker Push)
+    // 3. 构造透传请求
     const init = {
       method: request.method,
       headers: new Headers(request.headers),
@@ -61,6 +61,15 @@ export default {
     init.headers.delete('X-Real-IP');
     init.headers.delete('CF-Connecting-IP');
     init.headers.delete('Referer');
+
+    // [解决 429 限制的终极方案]
+    // 填入你 Docker Hub 的用户名和密码的 Base64 编码 (终端运行 `echo -n 'username:password' | base64` 获取)
+    // 强制使用你的账号身份去获取 Token，突破 CF IP 被滥用导致的匿名限流！
+    const DOCKER_AUTH_B64 = ""; // 例如 "dXNlcjpwYXNz"
+    
+    if (url.hostname === "auth.docker.io" && DOCKER_AUTH_B64) {
+      init.headers.set("Authorization", `Basic ${DOCKER_AUTH_B64}`);
+    }
 
     // 发起请求
     const response = await fetch(url.href, init);
