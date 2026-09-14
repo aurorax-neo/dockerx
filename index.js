@@ -11,6 +11,14 @@ export default {
     // 例如：docker pull 你的域名/ghcr.io/wg-easy/wg-easy:15.4.0
     // 实际请求的 Path 为: /v2/ghcr.io/wg-easy/wg-easy/manifests/15.4.0
     const thirdPartyRegistries = ["ghcr.io", "gcr.io", "k8s.gcr.io", "registry.k8s.io", "quay.io"];
+    
+    // 拦截非 Docker 规范的未知探测请求 (防扫描)
+    const isValidDockerReq = path.startsWith("/v2/") || path.startsWith("/v1/") || path.startsWith("/search") || path.startsWith("/token") || path.startsWith("/auth/");
+    if (!isValidDockerReq) {
+      // 使用 403 阻断或模拟成云厂商的默认拦截，不返回 404 以防暴露这是个代理
+      return new Response(null, { status: 403 });
+    }
+
     for (const registry of thirdPartyRegistries) {
       if (path.includes(`/${registry}/`)) {
         upstreamHost = registry;
