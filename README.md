@@ -7,11 +7,11 @@
 ## ✨ 特性
 
 - **多仓库支持**：原生支持代理 `Docker Hub`、`ghcr.io` (GitHub)、`gcr.io` (Google)、`quay.io` 等常见的第三方镜像库。
-- **极简高性能**：专为 Snippets 引擎优化，无正则 body 替换，确保不超时。
 - **动态 Auth 鉴权劫持**：兼容多个仓库的不同 Token 服务器，自动拦截 401 鉴权挑战。
+- **429 限流突破**：支持注入 Docker 凭证（Personal Access Token），彻底解决 Cloudflare 共享 IP 匿名拉取被限流的问题。
+- **隐蔽防探测 (Stealth Mode)**：精准拦截非 Docker 规范的请求，静默丢弃并返回 `403 Forbidden`，防恶意扫描，不暴露代理特征。
 - **官方镜像补全**：自动为 `nginx` 等短名官方 Docker 镜像补足 `/v2/library/` 路径。
-- **隐蔽防探测 (Stealth Mode)**：精准拦截非 Docker 规范的未知探测请求，直接静默丢弃 (空 404)，防扫描防滥用。
-- **支持 Docker Push**：全方法透传，支持 `POST/PUT` Body 数据透传，不仅支持镜像拉取，也能完美支持镜像推送。
+- **极简高性能**：专为 Snippets 引擎优化，无正则 body 替换，确保不超时。全方法透传支持镜像拉取和推送。
 
 ## 🚀 部署指南 (Cloudflare Snippets)
 
@@ -20,16 +20,14 @@
 3. 点击 **Create Snippet**，给它取个名字（如 `docker-proxy`）。
 4. 将本项目中 `index.js` 的代码全部复制并粘贴到代码框中。
 5. 在 **Filter** (过滤器) 中配置该规则的触发条件。例如：
-   - 匹配 Hostname 等于 `docker.你的域名.com` 
+   - 匹配 `Hostname` 等于 `docker.你的域名.com` 
    - （请确保你已经在 DNS 里将 `docker.你的域名.com` 代理状态开启，即点亮黄色的云朵）
 6. 点击 **Save and Deploy** (保存并部署)。
 
 ## 💻 客户端使用指南
 
 ### 1. 拉取常规 Docker Hub 镜像
-通过修改 daemon 配置，实现无缝拉取：
-
-编辑 `/etc/docker/daemon.json`：
+通过修改 daemon 配置，实现无缝拉取。编辑 `/etc/docker/daemon.json`：
 ```json
 {
   "registry-mirrors": [
@@ -56,4 +54,22 @@ docker pull alpine
 **加速拉取命令：**
 `docker pull docker.你的域名.com/ghcr.io/wg-easy/wg-easy:15.4.0`
 
-脚本会自动识别路径中的 `ghcr.io`，剥离多余路径，并去正确的服务器拉取资源及鉴权 Token！
+脚本会自动识别路径中的 `ghcr.io`，剥离多余路径，并去正确的服务器拉取资源及鉴权。
+
+## 🛠 常见问题排查
+
+### 遇到 `429 Too Many Requests` 报错？
+由于 Cloudflare 的出口 IP 被全球网民大量共用，Docker Hub 会极快耗尽对这些 IP 的“匿名拉取额度”（100次/6小时）。
+
+**解决方案**：在脚本中绑定你的个人 Docker 账号来绕过匿名限制！
+1. 前往 [Docker Hub - Security](https://hub.docker.com/settings/security) 申请一个 `Personal Access Token` (PAT)。
+2. 获取你的 **Docker ID (英文用户名，非邮箱)**。
+3. 在本地终端生成 Base64 凭证：
+   ```bash
+   echo -n "你的DockerID:生成的Token" | base64
+   ```
+4. 将输出的那串乱码（例如 `dXNlcjpwYXNz`）填写到 `index.js` 的以下位置中：
+   ```javascript
+   const DOCKER_AUTH_B64 = "填入你的Base64字符串"; 
+   ```
+5. 重新保存并部署 Snippet，以后所有的请求都会走你个人账号的 200次/6小时 独立额度，彻底告别 429。
