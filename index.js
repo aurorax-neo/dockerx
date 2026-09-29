@@ -43,31 +43,49 @@ export default {
 
     // 2. 路由与上游域名分配 (处理 Docker Hub 专有路由)
     if (path.startsWith("/token") || path.startsWith("/auth/")) {
-      let targetAuth = url.searchParams.get("auth_host") || "auth.docker.io";
-      const authPath = url.searchParams.get("auth_path");
+      // 优先从路径中提取目标鉴权域名与路径 (彻底解决 Go/containerd 客户端拼接 query 时直接覆盖导致 auth_host 丢失的问题)
+      const tokenPathMatch = path.match(/^\/(?:token|auth)\/([^\/]+)(\/.*)?$/);
+      let targetAuth = tokenPathMatch ? tokenPathMatch[1] : null;
+      let targetPath = tokenPathMatch ? (tokenPathMatch[2] || "/token") : null;
+
+      // 兜底：从 query 参数中提取
+      if (!targetAuth) targetAuth = url.searchParams.get("auth_host");
+      if (!targetPath && url.searchParams.get("auth_path")) targetPath = decodeURIComponent(url.searchParams.get("auth_path"));
+
+      const service = url.searchParams.get("service") || "";
       const scope = url.searchParams.get("scope") || "";
 
-      // 智能识别 scope 中的第三方镜像库 (双保险：即使客户端带了 auth_host=auth.docker.io 也能纠正)
+      // 智能识别第三方仓库（从 targetAuth, service 或 scope 中匹配）
+      let matchedRegistry = null;
       for (const registry of thirdPartyRegistries) {
-        if (scope.includes(`repository:${registry}/`) || scope.includes(`${registry}/`) || targetAuth === registry) {
-          targetAuth = registry;
-          url.searchParams.set("service", registry);
-          url.searchParams.set("scope", scope.replace(`repository:${registry}/`, "repository:").replace(`${registry}/`, ""));
+        if (
+          targetAuth === registry ||
+          service === registry ||
+          scope.includes(`repository:${registry}/`) ||
+          scope.includes(`${registry}/`)
+        ) {
+          matchedRegistry = registry;
           break;
         }
       }
 
-      url.hostname = targetAuth;
-      if (authPath) {
-        url.pathname = decodeURIComponent(authPath);
-      } else if (targetAuth === "quay.io") {
-        url.pathname = "/v2/auth";
-      } else if (targetAuth === "gcr.io") {
-        url.pathname = "/v2/token";
+      if (matchedRegistry) {
+        targetAuth = matchedRegistry;
+        url.searchParams.set("service", matchedRegistry);
+        url.searchParams.set("scope", scope.replace(`repository:${matchedRegistry}/`, "repository:").replace(`${matchedRegistry}/`, ""));
+        if (!targetPath) {
+          if (matchedRegistry === "quay.io") targetPath = "/v2/auth";
+          else if (matchedRegistry === "gcr.io") targetPath = "/v2/token";
+          else targetPath = "/token";
+        }
       } else {
-        url.pathname = "/token";
+        // 默认为 Docker Hub
+        targetAuth = targetAuth || "auth.docker.io";
+        targetPath = targetPath || "/token";
       }
 
+      url.hostname = targetAuth;
+      url.pathname = targetPath;
       url.searchParams.delete("auth_host");
       url.searchParams.delete("auth_path");
     } else if (path.startsWith("/search") || path.startsWith("/v1/")) {
@@ -120,8 +138,9 @@ export default {
         const originAuthUrl = match[1];
         try {
           const authUrlObj = new URL(originAuthUrl);
-          // 重写 realm 到我们的代理服务器，并通过 auth_host 与 auth_path 保留上游鉴权信息
-          const proxyAuthUrl = `https://${originHost}/token?auth_host=${authUrlObj.hostname}&auth_path=${encodeURIComponent(authUrlObj.pathname)}`;
+          // 将 upstream 的 host 和 path 编码进代理路径中 (例如 /token/ghcr.io/token)
+          // 避免客户端在向 realm 发起请求追加 service/scope query 时抹除原有 query 参数
+          const proxyAuthUrl = `https://${originHost}/token/${authUrlObj.hostname}${authUrlObj.pathname}`;
           resHeaders.set("www-authenticate", authHeader.replace(originAuthUrl, proxyAuthUrl));
         } catch (e) {
           // URL 解析失败时原样返回
