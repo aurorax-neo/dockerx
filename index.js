@@ -13,10 +13,22 @@ export default {
     const thirdPartyRegistries = ["ghcr.io", "gcr.io", "k8s.gcr.io", "registry.k8s.io", "quay.io"];
     
     // 拦截非 Docker 规范的未知探测请求 (防扫描)
-    const isValidDockerReq = path.startsWith("/v2/") || path.startsWith("/v1/") || path.startsWith("/search") || path.startsWith("/token") || path.startsWith("/auth/");
+    const isValidDockerReq = path.startsWith("/v2") || path.startsWith("/v1/") || path.startsWith("/search") || path.startsWith("/token") || path.startsWith("/auth/");
     if (!isValidDockerReq) {
       // 隐蔽模式：返回空 404 阻断未知探测请求，不暴露代理特征
       return new Response(null, { status: 404 });
+    }
+
+    // 基础探活检查：如果是纯 /v2 或 /v2/ 探活请求，直接返回 200 OK
+    // 避免因转发给 Docker Hub 返回 401 而导致客户端将整站鉴权锁定为 auth.docker.io
+    if (path === "/v2" || path === "/v2/") {
+      return new Response("{}", {
+        status: 200,
+        headers: {
+          "Docker-Distribution-API-Version": "registry/2.0",
+          "Content-Type": "application/json"
+        }
+      });
     }
 
     for (const registry of thirdPartyRegistries) {
@@ -31,10 +43,33 @@ export default {
 
     // 2. 路由与上游域名分配 (处理 Docker Hub 专有路由)
     if (path.startsWith("/token") || path.startsWith("/auth/")) {
-      // 如果请求携带了自定参数来指定第三方 Auth (进阶处理，通常用作备用)
-      const targetAuth = url.searchParams.get("auth_host") || "auth.docker.io";
+      let targetAuth = url.searchParams.get("auth_host") || "auth.docker.io";
+      const authPath = url.searchParams.get("auth_path");
+      const scope = url.searchParams.get("scope") || "";
+
+      // 智能识别 scope 中的第三方镜像库 (双保险：即使客户端带了 auth_host=auth.docker.io 也能纠正)
+      for (const registry of thirdPartyRegistries) {
+        if (scope.includes(`repository:${registry}/`) || scope.includes(`${registry}/`) || targetAuth === registry) {
+          targetAuth = registry;
+          url.searchParams.set("service", registry);
+          url.searchParams.set("scope", scope.replace(`repository:${registry}/`, "repository:").replace(`${registry}/`, ""));
+          break;
+        }
+      }
+
       url.hostname = targetAuth;
-      url.pathname = url.pathname.replace(/^\/auth/, "");
+      if (authPath) {
+        url.pathname = decodeURIComponent(authPath);
+      } else if (targetAuth === "quay.io") {
+        url.pathname = "/v2/auth";
+      } else if (targetAuth === "gcr.io") {
+        url.pathname = "/v2/token";
+      } else {
+        url.pathname = "/token";
+      }
+
+      url.searchParams.delete("auth_host");
+      url.searchParams.delete("auth_path");
     } else if (path.startsWith("/search") || path.startsWith("/v1/")) {
       url.hostname = "index.docker.io";
     } else {
@@ -84,9 +119,9 @@ export default {
       if (match && match[1]) {
         const originAuthUrl = match[1];
         try {
-          const authHost = new URL(originAuthUrl).hostname;
-          // 重写 realm 到我们的代理服务器，并通过 auth_host 参数告知代理这是去哪个仓库的认证
-          const proxyAuthUrl = `https://${originHost}/token?auth_host=${authHost}`;
+          const authUrlObj = new URL(originAuthUrl);
+          // 重写 realm 到我们的代理服务器，并通过 auth_host 与 auth_path 保留上游鉴权信息
+          const proxyAuthUrl = `https://${originHost}/token?auth_host=${authUrlObj.hostname}&auth_path=${encodeURIComponent(authUrlObj.pathname)}`;
           resHeaders.set("www-authenticate", authHeader.replace(originAuthUrl, proxyAuthUrl));
         } catch (e) {
           // URL 解析失败时原样返回
