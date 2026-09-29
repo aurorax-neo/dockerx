@@ -19,18 +19,6 @@ export default {
       return new Response(null, { status: 404 });
     }
 
-    // 基础探活检查：如果是纯 /v2 或 /v2/ 探活请求，直接返回 200 OK
-    // 避免因转发给 Docker Hub 返回 401 而导致客户端将整站鉴权锁定为 auth.docker.io
-    if (path === "/v2" || path === "/v2/") {
-      return new Response("{}", {
-        status: 200,
-        headers: {
-          "Docker-Distribution-API-Version": "registry/2.0",
-          "Content-Type": "application/json"
-        }
-      });
-    }
-
     for (const registry of thirdPartyRegistries) {
       if (path.includes(`/${registry}/`)) {
         upstreamHost = registry;
@@ -73,7 +61,7 @@ export default {
         targetAuth = matchedRegistry;
         url.searchParams.set("service", matchedRegistry);
         url.searchParams.set("scope", scope.replace(`repository:${matchedRegistry}/`, "repository:").replace(`${matchedRegistry}/`, ""));
-        if (!targetPath) {
+        if (!targetPath || (tokenPathMatch && tokenPathMatch[1] !== matchedRegistry)) {
           if (matchedRegistry === "quay.io") targetPath = "/v2/auth";
           else if (matchedRegistry === "gcr.io") targetPath = "/v2/token";
           else targetPath = "/token";
@@ -140,7 +128,8 @@ export default {
           const authUrlObj = new URL(originAuthUrl);
           // 将 upstream 的 host 和 path 编码进代理路径中 (例如 /token/ghcr.io/token)
           // 避免客户端在向 realm 发起请求追加 service/scope query 时抹除原有 query 参数
-          const proxyAuthUrl = `https://${originHost}/token/${authUrlObj.hostname}${authUrlObj.pathname}`;
+          const authPath = authUrlObj.pathname && authUrlObj.pathname !== "/" ? authUrlObj.pathname : "/token";
+          const proxyAuthUrl = `https://${originHost}/token/${authUrlObj.hostname}${authPath}`;
           resHeaders.set("www-authenticate", authHeader.replace(originAuthUrl, proxyAuthUrl));
         } catch (e) {
           // URL 解析失败时原样返回
