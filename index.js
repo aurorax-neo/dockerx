@@ -70,6 +70,11 @@ export default {
         // 默认为 Docker Hub
         targetAuth = targetAuth || "auth.docker.io";
         targetPath = targetPath || "/token";
+        // 补全 Docker Hub 官方镜像在获取 Token 时缺失的 library/ 前缀
+        if (scope && scope.includes("repository:")) {
+          const newScope = scope.split(" ").map(s => s.replace(/^repository:([^/:]+):/, "repository:library/$1:")).join(" ");
+          url.searchParams.set("scope", newScope);
+        }
       }
 
       url.hostname = targetAuth;
