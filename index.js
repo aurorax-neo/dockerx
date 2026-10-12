@@ -7,31 +7,42 @@ export default {
     // 默认上游
     let upstreamHost = "registry-1.docker.io";
 
-    // 1. 判断是否包含常见的第三方仓库前缀
-    // 例如：docker pull 你的域名/ghcr.io/wg-easy/wg-easy:15.4.0
-    // 实际请求的 Path 为: /v2/ghcr.io/wg-easy/wg-easy/manifests/15.4.0
-    const thirdPartyRegistries = ["ghcr.io", "gcr.io", "k8s.gcr.io", "registry.k8s.io", "quay.io"];
-    
+    // 常见第三方镜像仓库映射与鉴权路由配置
+    const REGISTRY_CONFIG = {
+      "docker.io": { upstream: "registry-1.docker.io", authHost: "auth.docker.io", authPath: "/token", service: "registry.docker.io" },
+      "registry-1.docker.io": { authHost: "auth.docker.io", authPath: "/token", service: "registry.docker.io" },
+      "ghcr.io": { authHost: "ghcr.io", authPath: "/token", service: "ghcr.io" },
+      "quay.io": { authHost: "quay.io", authPath: "/v2/auth", service: "quay.io" },
+      "gcr.io": { authHost: "gcr.io", authPath: "/v2/token", service: "gcr.io" },
+      "k8s.gcr.io": { upstream: "registry.k8s.io", authHost: "registry.k8s.io", authPath: "/token", service: "registry.k8s.io" },
+      "registry.k8s.io": { authHost: "registry.k8s.io", authPath: "/token", service: "registry.k8s.io" },
+      "mcr.microsoft.com": { authHost: null, authPath: null, service: null },
+      "nvcr.io": { authHost: "nvcr.io", authPath: "/proxy_auth", service: "registry" },
+      "docker.elastic.co": { authHost: "docker-auth.elastic.co", authPath: "/auth", service: "token-service" },
+      "registry.gitlab.com": { authHost: "gitlab.com", authPath: "/jwt/auth", service: "container_registry" },
+      "public.ecr.aws": { authHost: "public.ecr.aws", authPath: "/token/", service: "public.ecr.aws" }
+    };
+
     // 拦截非 Docker 规范的未知探测请求 (防扫描)
-    const isValidDockerReq = path.startsWith("/v2") || path.startsWith("/v1/") || path.startsWith("/search") || path.startsWith("/token") || path.startsWith("/auth/");
+    const isValidDockerReq = path === "/v2" || path.startsWith("/v2/") || path.startsWith("/v1/") || path.startsWith("/search") || path.startsWith("/token") || path.startsWith("/auth/");
     if (!isValidDockerReq) {
       // 隐蔽模式：返回空 404 阻断未知探测请求，不暴露代理特征
       return new Response(null, { status: 404 });
     }
 
-    for (const registry of thirdPartyRegistries) {
-      if (path.includes(`/${registry}/`)) {
-        upstreamHost = registry;
-        // 把前缀从路径中抹除掉，让上游仓库能正确识别
-        // 例如 /v2/ghcr.io/wg-easy -> /v2/wg-easy
-        url.pathname = path.replace(`/${registry}/`, "/");
-        break;
-      }
+    // 1. 判断是否包含第三方仓库前缀: /v2/<domain>/...
+    // 例如：docker pull 你的域名/ghcr.io/linuxserver/docker-nginx:latest
+    const thirdPartyMatch = path.match(/^\/v2\/([a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\/(.*)$/);
+    if (thirdPartyMatch) {
+      const reg = thirdPartyMatch[1];
+      const cfg = REGISTRY_CONFIG[reg];
+      upstreamHost = (cfg && cfg.upstream) ? cfg.upstream : reg;
+      // 抹除域名前缀，让上游仓库正确识别路径
+      url.pathname = `/v2/${thirdPartyMatch[2]}`;
     }
 
-    // 2. 路由与上游域名分配 (处理 Docker Hub 专有路由)
+    // 2. 路由与上游域名分配 (处理鉴权路由与多仓库分发)
     if (path.startsWith("/token") || path.startsWith("/auth/")) {
-      // 优先从路径中提取目标鉴权域名与路径 (彻底解决 Go/containerd 客户端拼接 query 时直接覆盖导致 auth_host 丢失的问题)
       const tokenPathMatch = path.match(/^\/(?:token|auth)\/([^\/]+)(\/.*)?$/);
       let targetAuth = tokenPathMatch ? tokenPathMatch[1] : null;
       let targetPath = tokenPathMatch ? (tokenPathMatch[2] || "/token") : null;
@@ -43,29 +54,24 @@ export default {
       const service = url.searchParams.get("service") || "";
       const scope = url.searchParams.get("scope") || "";
 
-      // 智能识别第三方仓库（从 targetAuth, service 或 scope 中匹配）
+      // 智能识别第三方仓库 (优先从 scope 的域名前缀匹配，其次从 targetAuth)
       let matchedRegistry = null;
-      for (const registry of thirdPartyRegistries) {
-        if (
-          targetAuth === registry ||
-          service === registry ||
-          scope.includes(`repository:${registry}/`) ||
-          scope.includes(`${registry}/`)
-        ) {
-          matchedRegistry = registry;
-          break;
-        }
+      if (scope) {
+        const scopeMatch = scope.match(/(?:^|\s)repository:([a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\/(.+)$/);
+        if (scopeMatch) matchedRegistry = scopeMatch[1];
+      }
+      if (!matchedRegistry && targetAuth && targetAuth !== "auth.docker.io") {
+        matchedRegistry = targetAuth;
       }
 
       if (matchedRegistry) {
-        targetAuth = matchedRegistry;
-        url.searchParams.set("service", matchedRegistry);
-        url.searchParams.set("scope", scope.replace(`repository:${matchedRegistry}/`, "repository:").replace(`${matchedRegistry}/`, ""));
-        if (!targetPath || (tokenPathMatch && tokenPathMatch[1] !== matchedRegistry)) {
-          if (matchedRegistry === "quay.io") targetPath = "/v2/auth";
-          else if (matchedRegistry === "gcr.io") targetPath = "/v2/token";
-          else targetPath = "/token";
-        }
+        const cfg = REGISTRY_CONFIG[matchedRegistry] || {};
+        targetAuth = cfg.authHost || matchedRegistry;
+        targetPath = cfg.authPath || "/token";
+        url.searchParams.set("service", cfg.service || matchedRegistry);
+        // 去除 scope 中的 registry 前缀
+        const newScope = scope.replace(`repository:${matchedRegistry}/`, "repository:").replace(`${matchedRegistry}/`, "");
+        url.searchParams.set("scope", newScope);
       } else {
         // 默认为 Docker Hub
         targetAuth = targetAuth || "auth.docker.io";
@@ -85,9 +91,9 @@ export default {
       url.hostname = "index.docker.io";
     } else {
       url.hostname = upstreamHost;
-      // 补全 Docker Hub 的 library 前缀 (只针对 Docker Hub，且不包含第三方的场景)
-      if (upstreamHost === "registry-1.docker.io" && url.pathname.startsWith("/v2/") && url.pathname.split("/").length === 5) {
-        url.pathname = url.pathname.replace("/v2/", "/v2/library/");
+      // 补全 Docker Hub 官方短名镜像 library/ 前缀 (精确匹配 manifests/blobs/tags/referrers)
+      if (upstreamHost === "registry-1.docker.io") {
+        url.pathname = url.pathname.replace(/^\/v2\/([^\/]+)\/(manifests|blobs|tags|referrers)(\/.*)?$/, "/v2/library/$1/$2$3");
       }
     }
 
@@ -113,7 +119,8 @@ export default {
     // 强制使用你的账号身份去获取 Token，突破 CF IP 被滥用导致的匿名限流！
     const DOCKER_AUTH_B64 = ""; // 例如 "dXNlcjpwYXNz"
     
-    if (url.hostname === "auth.docker.io" && DOCKER_AUTH_B64) {
+    // 仅在客户端未携带自身 Authorization 时注入凭据，避免覆盖客户端自定义凭据
+    if (!init.headers.has("Authorization") && DOCKER_AUTH_B64 && url.hostname === "auth.docker.io") {
       init.headers.set("Authorization", `Basic ${DOCKER_AUTH_B64}`);
     }
 
