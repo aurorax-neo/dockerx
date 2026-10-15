@@ -119,8 +119,8 @@ export default {
     // 强制使用你的账号身份去获取 Token，突破 CF IP 被滥用导致的匿名限流！
     const DOCKER_AUTH_B64 = ""; // 例如 "dXNlcjpwYXNz"
     
-    // 仅在客户端未携带自身 Authorization 时注入凭据，避免覆盖客户端自定义凭据
-    if (!init.headers.has("Authorization") && DOCKER_AUTH_B64 && url.hostname === "auth.docker.io") {
+    // 强制使用配置的 Docker Hub 账号凭据，彻底杜绝客户端残留登录态导致的鉴权错误
+    if (DOCKER_AUTH_B64 && url.hostname === "auth.docker.io") {
       init.headers.set("Authorization", `Basic ${DOCKER_AUTH_B64}`);
     }
 
