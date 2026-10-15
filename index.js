@@ -119,18 +119,27 @@ export default {
     // 强制使用你的账号身份去获取 Token，突破 CF IP 被滥用导致的匿名限流！
     const DOCKER_AUTH_B64 = ""; // 例如 "dXNlcjpwYXNz"
     
-    // 强制使用配置的 Docker Hub 账号凭据，彻底杜绝客户端残留登录态导致的鉴权错误
-    if (DOCKER_AUTH_B64 && url.hostname === "auth.docker.io") {
+    // 优先尊重客户端自身携带的凭据（确保客户端能正常访问其有权的私有仓库）
+    // 仅在客户端未登录时注入内置凭据，用于突破 Cloudflare 共享 IP 的匿名限流
+    const hasClientAuth = init.headers.has("Authorization");
+    if (!hasClientAuth && DOCKER_AUTH_B64 && url.hostname === "auth.docker.io") {
       init.headers.set("Authorization", `Basic ${DOCKER_AUTH_B64}`);
     }
 
     // 发起请求
     let response = await fetch(url.href, init);
 
-    // [自动处理客户端残留登录态]
-    // 若客户端携带了历史或无效的 Basic Auth 导致 Token 鉴权失败 (401)，自动剥离凭据并以匿名身份降级重试
-    if (response.status === 401 && (path.startsWith("/token") || path.startsWith("/auth/")) && init.headers.has("Authorization")) {
-      init.headers.delete("Authorization");
+    // [自动处理客户端残留/无效登录态 (Auto Fallback)]
+    // 若客户端携带了历史或无效凭据导致 Token 鉴权失败 (401)：
+    // 1. 若是 Docker Hub 且配置了内置账号，改用内置账号重试；否则以匿名身份降级重试。
+    // 2. 仅当重试返回 200 时采纳（成功拯救因客户端残留账密而失败的公共镜像拉取）；
+    //    若重试仍非 200 则保留初始 401 报错，严格保障私有仓库安全隔离与报错准确性。
+    if (response.status === 401 && (path.startsWith("/token") || path.startsWith("/auth/")) && hasClientAuth) {
+      if (DOCKER_AUTH_B64 && url.hostname === "auth.docker.io") {
+        init.headers.set("Authorization", `Basic ${DOCKER_AUTH_B64}`);
+      } else {
+        init.headers.delete("Authorization");
+      }
       const retryResponse = await fetch(url.href, init);
       if (retryResponse.status === 200) {
         response = retryResponse;
