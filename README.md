@@ -8,7 +8,8 @@
 
 - **多仓库与任意域名动态支持**：原生内置 `Docker Hub`、`ghcr.io` (GitHub)、`quay.io` (Red Hat)、`gcr.io` (Google)、`registry.k8s.io` (Kubernetes)、`mcr.microsoft.com` (微软)、`nvcr.io` (NVIDIA)、`docker.elastic.co` (Elastic)、`registry.gitlab.com` (GitLab)、`public.ecr.aws` (AWS) 等主流仓库，并支持任意含点号的标准镜像域名自动识别分发。
 - **动态 Auth 鉴权劫持与作用域重写**：兼容多个仓库的不同 Token 服务器，自动拦截 401 鉴权挑战并精确重写 Scope，彻底解决官方短名镜像（如 `postgres`）报 access denied 的问题。
-- **429 限流突破**：支持注入 Docker 凭证（Personal Access Token），且不覆盖客户端自定义凭据，突破 Cloudflare 共享 IP 匿名限流。
+- **429 限流突破**：支持注入 Docker 凭证（Personal Access Token），且突破 Cloudflare 共享 IP 匿名限流。
+- **客户端残留登录态自愈 (Auto Fallback)**：自动检测并容错客户端残留的 `docker login` 无效凭据，在上游鉴权返回 401 时智能降级为匿名身份重试，无需手动 `docker logout`。
 - **隐蔽防探测 (Stealth Mode)**：精准拦截非 Docker 规范的请求，静默丢弃并返回 `404 Not Found`，防恶意扫描，不暴露代理特征。
 - **官方镜像自动补全**：自动为 `postgres`、`nginx` 等短名官方 Docker 镜像补足 `/v2/library/` 路径及 Token 作用域。
 - **极简高性能**：专为 Snippets 引擎优化，无正则 body 替换，确保耗时远低于 5ms 限制。全方法透传支持镜像拉取（注：受限于 Cloudflare 免费版单次上传 100MB 限制，较大镜像层不建议使用 Push）。

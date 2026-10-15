@@ -125,8 +125,17 @@ export default {
     }
 
     // 发起请求
-    const response = await fetch(url.href, init);
+    let response = await fetch(url.href, init);
 
+    // [自动处理客户端残留登录态]
+    // 若客户端携带了历史或无效的 Basic Auth 导致 Token 鉴权失败 (401)，自动剥离凭据并以匿名身份降级重试
+    if (response.status === 401 && (path.startsWith("/token") || path.startsWith("/auth/")) && init.headers.has("Authorization")) {
+      init.headers.delete("Authorization");
+      const retryResponse = await fetch(url.href, init);
+      if (retryResponse.status === 200) {
+        response = retryResponse;
+      }
+    }
     // 4. 劫持鉴权服务器地址 (支持多仓库)
     const resHeaders = new Headers(response.headers);
     const authHeader = resHeaders.get("www-authenticate");
